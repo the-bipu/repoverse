@@ -1,7 +1,9 @@
 "use client";
 
 import { useState, useRef } from "react";
+import { useRouter } from "next/navigation";
 import Skyline from "@/components/Skyline";
+import { parseRepoInput } from "@/lib/github";
 
 const LEGEND: [string, string][] = [
   ["Root folder", "City"],
@@ -58,6 +60,7 @@ const PHASES: [string, string, string][] = [
 const QUICK_REPOS = ["facebook/react", "vercel/next.js", "vuejs/core", "nodejs/node", "torvalds/linux"];
 
 export default function HomePage() {
+  const router = useRouter();
   const [url, setUrl] = useState("");
   const [toast, setToast] = useState("");
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -66,6 +69,15 @@ export default function HomePage() {
     setToast(message);
     if (toastTimer.current) clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToast(""), 2400);
+  }
+
+  function goToCity(repo: string) {
+    const parsed = parseRepoInput(repo);
+    if (!parsed) {
+      notReady("Enter a valid GitHub repo, like owner/repo");
+      return;
+    }
+    router.push(`/city?repo=${parsed.owner}/${parsed.repo}`);
   }
 
   return (
@@ -84,9 +96,9 @@ export default function HomePage() {
             <button className="btn btn-ghost" onClick={() => notReady("Sign-in isn't built yet")}>
               Sign in
             </button>
-            <button className="btn btn-primary" onClick={() => notReady("City rendering ships in Phase 2")}>
+            <p className="btn btn-primary">
               Visualize a repo
-            </button>
+            </p>
           </div>
         </nav>
       </div>
@@ -106,10 +118,11 @@ export default function HomePage() {
             codebase by walking through it, not by scrolling a file tree.
           </p>
           <form
+            id="hero-repo-form"
             className="repo-form"
             onSubmit={(e) => {
               e.preventDefault();
-              notReady(url ? `Parsing for "${url}" isn't built yet` : "Paste a repo URL first");
+              goToCity(url);
             }}
           >
             <input
@@ -121,7 +134,7 @@ export default function HomePage() {
           </form>
           <div className="quick-repos">
             {QUICK_REPOS.map((r) => (
-              <button key={r} onClick={() => setUrl(r)}>
+              <button key={r} onClick={() => goToCity(r)}>
                 {r}
               </button>
             ))}
@@ -272,7 +285,7 @@ export default function HomePage() {
             <button
               className="btn btn-primary"
               style={{ padding: "12px 24px", fontSize: "15px" }}
-              onClick={() => notReady("City rendering ships in Phase 2")}
+              onClick={() => goToCity(url || QUICK_REPOS[0])}
             >
               Visualize your first repo →
             </button>
