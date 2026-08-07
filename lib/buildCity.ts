@@ -91,6 +91,7 @@ export interface BuildingActivity {
   level: ActivityLevel;
   lastCommitDate: string | null;
   commitCount: number;
+  author?: string | null;
 }
 
 /**
@@ -128,3 +129,105 @@ export const ACTIVITY_LABELS: Record<ActivityLevel, string> = {
 // Only fetch per-building activity for the N largest buildings, so a repo
 // with 60 top-level folders can't blow the 60-req/hr unauthenticated budget.
 export const MAX_ACTIVITY_BUILDINGS = 20;
+
+/* ---------- v4: shared layout, branch diff, PR diff ---------- */
+
+// Shared with City3D so dependency-road endpoints line up with building
+// positions exactly — one source of truth for the grid math.
+export const CITY_GAP = 2.2;
+
+export function getBuildingPosition(
+  b: Pick<CityBuilding, "col" | "row">,
+  columns: number
+): [number, number] {
+  const x = (b.col - (columns - 1) / 2) * CITY_GAP;
+  const z = b.row * CITY_GAP;
+  return [x, z];
+}
+
+export type DiffStatus = "added" | "removed" | "modified" | "unchanged";
+
+export interface BuildingDiff {
+  status: DiffStatus;
+  added: number;
+  removed: number;
+  modified: number;
+}
+
+// Matches the product spec: green = added, red = deleted, blue = modified.
+export const DIFF_COLORS: Record<DiffStatus, string> = {
+  added: "#4ADE80",
+  removed: "#FF6B6B",
+  modified: "#60A5FA",
+  unchanged: "#2A3244",
+};
+
+function topLevelCounts(items: GithubTreeItem[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const item of items) {
+    if (item.type !== "blob") continue;
+    const slash = item.path.indexOf("/");
+    const top = slash === -1 ? item.path : item.path.slice(0, slash);
+    counts.set(top, (counts.get(top) ?? 0) + 1);
+  }
+  return counts;
+}
+
+/**
+ * Compares two branches by top-level file counts (not a real content diff —
+ * cheap to compute from trees we already have to fetch). A folder present in
+ * both but with a different count is called "modified"; present only in the
+ * compare branch is "added"; present only in the base branch is "removed".
+ */
+export function buildBranchDiff(
+  baseItems: GithubTreeItem[],
+  compareItems: GithubTreeItem[]
+): Record<string, BuildingDiff> {
+  const base = topLevelCounts(baseItems);
+  const compare = topLevelCounts(compareItems);
+  const names = new Set([...base.keys(), ...compare.keys()]);
+  const result: Record<string, BuildingDiff> = {};
+
+  for (const name of names) {
+    const b = base.get(name);
+    const c = compare.get(name);
+    if (b == null && c != null) {
+      result[name] = { status: "added", added: c, removed: 0, modified: 0 };
+    } else if (b != null && c == null) {
+      result[name] = { status: "removed", added: 0, removed: b, modified: 0 };
+    } else if (b !== c) {
+      result[name] = { status: "modified", added: 0, removed: 0, modified: Math.abs((c ?? 0) - (b ?? 0)) };
+    } else {
+      result[name] = { status: "unchanged", added: 0, removed: 0, modified: 0 };
+    }
+  }
+  return result;
+}
+
+/**
+ * Aggregates a PR's changed-files list up to the top-level folder each file
+ * lives in, so we can highlight only the buildings a PR actually touches.
+ */
+export function buildPRDiff(
+  files: { filename: string; status: string }[]
+): Record<string, BuildingDiff> {
+  const result: Record<string, BuildingDiff> = {};
+
+  for (const f of files) {
+    const slash = f.filename.indexOf("/");
+    const top = slash === -1 ? f.filename : f.filename.slice(0, slash);
+    if (!result[top]) result[top] = { status: "unchanged", added: 0, removed: 0, modified: 0 };
+    if (f.status === "added") result[top].added++;
+    else if (f.status === "removed") result[top].removed++;
+    else result[top].modified++;
+  }
+
+  for (const key of Object.keys(result)) {
+    const d = result[key];
+    if (d.added > 0 && d.removed === 0 && d.modified === 0) d.status = "added";
+    else if (d.removed > 0 && d.added === 0 && d.modified === 0) d.status = "removed";
+    else d.status = "modified";
+  }
+
+  return result;
+}

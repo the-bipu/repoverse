@@ -93,6 +93,7 @@ export async function fetchRepoTree(
 export interface PathActivity {
   lastCommitDate: string | null;
   commitCount: number;
+  author: string | null;
 }
 
 /**
@@ -118,17 +119,20 @@ export async function fetchPathActivity(
       )}&per_page=1`
     );
     if (!res.ok) {
-      return { lastCommitDate: null, commitCount: 0 };
+      return { lastCommitDate: null, commitCount: 0, author: null };
     }
     const data = await res.json();
     const lastPage = parseLastPageFromLinkHeader(res.headers.get("link"));
     const commitCount = lastPage ?? (Array.isArray(data) ? data.length : 0);
     const lastCommitDate =
       data?.[0]?.commit?.committer?.date ?? data?.[0]?.commit?.author?.date ?? null;
-    return { lastCommitDate, commitCount };
+    // Prefer the GitHub-linked login; fall back to raw commit author name
+    // (some commits have no linked account).
+    const author = data?.[0]?.author?.login ?? data?.[0]?.commit?.author?.name ?? null;
+    return { lastCommitDate, commitCount, author };
   } catch {
     // network hiccup on one path shouldn't fail the whole city
-    return { lastCommitDate: null, commitCount: 0 };
+    return { lastCommitDate: null, commitCount: 0, author: null };
   }
 }
 
@@ -158,4 +162,103 @@ export async function fetchContributors(owner: string, repo: string): Promise<Co
   } catch {
     return [];
   }
+}
+
+/* ---------- v4: source content, branches, PR preview, pulse ---------- */
+
+/**
+ * Raw file content via raw.githubusercontent.com — this host is NOT part of
+ * the api.github.com rate limit, so sampling files for dependency parsing
+ * doesn't compete with the 60/hr budget the rest of the app runs on.
+ */
+export async function fetchFileRaw(
+  owner: string,
+  repo: string,
+  branch: string,
+  path: string
+): Promise<string | null> {
+  try {
+    const res = await fetch(
+      `https://raw.githubusercontent.com/${owner}/${repo}/${encodeURIComponent(
+        branch
+      )}/${path.split("/").map(encodeURIComponent).join("/")}`
+    );
+    if (!res.ok) return null;
+    return await res.text();
+  } catch {
+    return null;
+  }
+}
+
+export interface BranchInfo {
+  name: string;
+}
+
+export async function fetchBranches(owner: string, repo: string): Promise<BranchInfo[]> {
+  try {
+    const res = await githubFetch(
+      `https://api.github.com/repos/${owner}/${repo}/branches?per_page=30`
+    );
+    if (!res.ok) return [];
+    const data = await res.json();
+    if (!Array.isArray(data)) return [];
+    return data.map((b) => ({ name: b.name as string }));
+  } catch {
+    return [];
+  }
+}
+
+export interface PRFile {
+  filename: string;
+  status: "added" | "removed" | "modified" | "renamed" | string;
+  additions: number;
+  deletions: number;
+}
+
+export async function fetchPRFiles(
+  owner: string,
+  repo: string,
+  prNumber: number
+): Promise<PRFile[]> {
+  const res = await githubFetch(
+    `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/files?per_page=100`
+  );
+  if (res.status === 404) {
+    throw new Error(`PR #${prNumber} not found on this repo.`);
+  }
+  if (!res.ok) {
+    throw new Error(`Couldn't load PR #${prNumber} (${res.status}).`);
+  }
+  const data = await res.json();
+  if (!Array.isArray(data)) return [];
+  return data.map((f) => ({
+    filename: f.filename as string,
+    status: f.status as string,
+    additions: f.additions as number,
+    deletions: f.deletions as number,
+  }));
+}
+
+export interface WeeklyCommits {
+  weekStart: number; // unix seconds
+  total: number;
+}
+
+/**
+ * GitHub computes this stat asynchronously on first request and can return
+ * 202 while it warms the cache. Callers should treat `null` as "try again
+ * shortly", not as a hard error.
+ */
+export async function fetchCommitActivity(
+  owner: string,
+  repo: string
+): Promise<WeeklyCommits[] | null> {
+  const res = await githubFetch(
+    `https://api.github.com/repos/${owner}/${repo}/stats/commit_activity`
+  );
+  if (res.status === 202) return null;
+  if (!res.ok) return null;
+  const data = await res.json();
+  if (!Array.isArray(data)) return null;
+  return data.map((w) => ({ weekStart: w.week as number, total: w.total as number }));
 }

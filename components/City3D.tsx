@@ -2,29 +2,32 @@
 
 import { useMemo, useState } from "react";
 import { Canvas } from "@react-three/fiber";
-import { OrbitControls, Html } from "@react-three/drei";
-import type { CityData, CityBuilding, BuildingActivity } from "@/lib/buildCity";
-import { ACTIVITY_COLORS, ACTIVITY_LABELS } from "@/lib/buildCity";
+import { OrbitControls, Html, Line } from "@react-three/drei";
+import type { CityData, CityBuilding, BuildingActivity, BuildingDiff } from "@/lib/buildCity";
+import { ACTIVITY_COLORS, ACTIVITY_LABELS, DIFF_COLORS, getBuildingPosition, CITY_GAP } from "@/lib/buildCity";
+import type { DependencyEdge } from "@/lib/dependencies";
 
-const GAP = 2.2;
-
-export type CityMode = "structure" | "heatmap";
+export type CityMode = "structure" | "heatmap" | "compare" | "pr";
 
 interface BuildingProps {
   b: CityBuilding;
   columns: number;
   mode: CityMode;
   activity?: BuildingActivity;
+  diff?: BuildingDiff;
 }
 
-function Building({ b, columns, mode, activity }: BuildingProps) {
-  const [hovered, setHovered] = useState(false);
-  const x = (b.col - (columns - 1) / 2) * GAP;
-  const z = b.row * GAP;
+function buildingColor(b: CityBuilding, mode: CityMode, activity?: BuildingActivity, diff?: BuildingDiff) {
+  if (mode === "heatmap") return activity ? ACTIVITY_COLORS[activity.level] : ACTIVITY_COLORS.unknown;
+  if (mode === "compare" || mode === "pr") return diff ? DIFF_COLORS[diff.status] : DIFF_COLORS.unchanged;
+  return b.kind === "folder" ? "#5EEAD4" : "#FFB454";
+}
 
-  const structureColor = b.kind === "folder" ? "#5EEAD4" : "#FFB454";
-  const heatColor = activity ? ACTIVITY_COLORS[activity.level] : ACTIVITY_COLORS.unknown;
-  const color = mode === "heatmap" ? heatColor : structureColor;
+function Building({ b, columns, mode, activity, diff }: BuildingProps) {
+  const [hovered, setHovered] = useState(false);
+  const [x, z] = getBuildingPosition(b, columns);
+  const color = buildingColor(b, mode, activity, diff);
+  const dimmed = (mode === "compare" || mode === "pr") && (!diff || diff.status === "unchanged");
 
   return (
     <group position={[x, 0, z]}>
@@ -40,9 +43,9 @@ function Building({ b, columns, mode, activity }: BuildingProps) {
         <meshStandardMaterial
           color={color}
           emissive={color}
-          emissiveIntensity={hovered ? 0.55 : mode === "heatmap" ? 0.3 : 0.15}
+          emissiveIntensity={hovered ? 0.55 : dimmed ? 0.05 : mode === "structure" ? 0.15 : 0.3}
           transparent
-          opacity={b.kind === "folder" || mode === "heatmap" ? 1 : 0.85}
+          opacity={dimmed ? 0.35 : b.kind === "folder" || mode !== "structure" ? 1 : 0.85}
         />
       </mesh>
       {hovered && (
@@ -65,10 +68,18 @@ function Building({ b, columns, mode, activity }: BuildingProps) {
               {b.fileCount} file{b.fileCount === 1 ? "" : "s"}
             </div>
             {mode === "heatmap" && activity && (
-              <div style={{ color: heatColor, marginTop: 2 }}>
+              <div style={{ color, marginTop: 2 }}>
                 {ACTIVITY_LABELS[activity.level]}
-                {activity.lastCommitDate &&
-                  ` · ${new Date(activity.lastCommitDate).toLocaleDateString()}`}
+                {activity.lastCommitDate && ` · ${new Date(activity.lastCommitDate).toLocaleDateString()}`}
+                {activity.author && ` · ${activity.author}`}
+              </div>
+            )}
+            {(mode === "compare" || mode === "pr") && diff && diff.status !== "unchanged" && (
+              <div style={{ color, marginTop: 2, textTransform: "capitalize" }}>
+                {diff.status}
+                {diff.added > 0 && ` · +${diff.added}`}
+                {diff.removed > 0 && ` · -${diff.removed}`}
+                {diff.modified > 0 && ` · ~${diff.modified}`}
               </div>
             )}
           </div>
@@ -78,25 +89,68 @@ function Building({ b, columns, mode, activity }: BuildingProps) {
   );
 }
 
+function Roads({ edges, buildingsById, columns }: { edges: DependencyEdge[]; buildingsById: Map<string, CityBuilding>; columns: number }) {
+  const maxWeight = Math.max(1, ...edges.map((e) => e.weight));
+  return (
+    <>
+      {edges.map((e, i) => {
+        const from = buildingsById.get(`folder-${e.from}`);
+        const to = buildingsById.get(`folder-${e.to}`);
+        if (!from || !to) return null;
+        const [x1, z1] = getBuildingPosition(from, columns);
+        const [x2, z2] = getBuildingPosition(to, columns);
+        const midY = 0.08 + (e.weight / maxWeight) * 0.4;
+        const points: [number, number, number][] = [
+          [x1, 0.05, z1],
+          [(x1 + x2) / 2, midY, (z1 + z2) / 2],
+          [x2, 0.05, z2],
+        ];
+        return (
+          <Line
+            key={`${e.from}-${e.to}-${i}`}
+            points={points}
+            color="#5EEAD4"
+            lineWidth={Math.max(1, Math.min(4, e.weight))}
+            transparent
+            opacity={0.5}
+          />
+        );
+      })}
+    </>
+  );
+}
+
 export default function City3D({
   data,
   mode = "structure",
   activity = {},
+  diff = {},
+  edges = [],
+  showRoads = false,
 }: {
   data: CityData;
   mode?: CityMode;
   activity?: Record<string, BuildingActivity>;
+  diff?: Record<string, BuildingDiff>;
+  edges?: DependencyEdge[];
+  showRoads?: boolean;
 }) {
   const { buildings, columns } = data;
+
+  const buildingsById = useMemo(() => {
+    const map = new Map<string, CityBuilding>();
+    for (const b of buildings) map.set(b.id, b);
+    return map;
+  }, [buildings]);
 
   const rows = useMemo(
     () => (buildings.length ? Math.max(...buildings.map((b) => b.row)) + 1 : 1),
     [buildings]
   );
 
-  const groundWidth = columns * GAP + 6;
-  const groundDepth = rows * GAP + 6;
-  const centerZ = groundDepth / 2 - GAP / 2;
+  const groundWidth = columns * CITY_GAP + 6;
+  const groundDepth = rows * CITY_GAP + 6;
+  const centerZ = groundDepth / 2 - CITY_GAP / 2;
 
   return (
     <Canvas
@@ -114,8 +168,10 @@ export default function City3D({
       </mesh>
 
       {buildings.map((b) => (
-        <Building key={b.id} b={b} columns={columns} mode={mode} activity={activity[b.id]} />
+        <Building key={b.id} b={b} columns={columns} mode={mode} activity={activity[b.id]} diff={diff[b.name]} />
       ))}
+
+      {showRoads && <Roads edges={edges} buildingsById={buildingsById} columns={columns} />}
 
       <OrbitControls
         enablePan
