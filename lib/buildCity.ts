@@ -82,3 +82,49 @@ export function buildCityFromTree(items: GithubTreeItem[], truncated: boolean): 
     },
   };
 }
+
+/* ---------- v3: activity / heatmap ---------- */
+
+export type ActivityLevel = "fresh" | "active" | "veryActive" | "dead" | "unknown";
+
+export interface BuildingActivity {
+  level: ActivityLevel;
+  lastCommitDate: string | null;
+  commitCount: number;
+}
+
+/**
+ * Heuristic classification from one cheap signal per building: days since the
+ * last commit on that path, plus an approximate total commit count. This is
+ * an approximation, not a real churn analysis — good enough for a first pass
+ * at "what's alive vs dead", refined later with fuller commit history.
+ */
+export function classifyActivity(a: { lastCommitDate: string | null; commitCount: number }): ActivityLevel {
+  if (!a.lastCommitDate || a.commitCount === 0) return "dead";
+  const days = (Date.now() - new Date(a.lastCommitDate).getTime()) / 86_400_000;
+  if (days <= 30 && a.commitCount >= 20) return "veryActive";
+  if (days <= 30) return "fresh";
+  if (days <= 180) return "active";
+  return "dead";
+}
+
+// Matches the product spec: green = recent, yellow = moderate, red = very active, gray = dead.
+export const ACTIVITY_COLORS: Record<ActivityLevel, string> = {
+  fresh: "#4ADE80",
+  active: "#FACC15",
+  veryActive: "#FF6B6B",
+  dead: "#4B5563",
+  unknown: "#334155",
+};
+
+export const ACTIVITY_LABELS: Record<ActivityLevel, string> = {
+  fresh: "Recently updated",
+  active: "Moderately active",
+  veryActive: "Very active",
+  dead: "Dead / stale",
+  unknown: "Loading…",
+};
+
+// Only fetch per-building activity for the N largest buildings, so a repo
+// with 60 top-level folders can't blow the 60-req/hr unauthenticated budget.
+export const MAX_ACTIVITY_BUILDINGS = 20;

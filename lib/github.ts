@@ -87,3 +87,75 @@ export async function fetchRepoTree(
     truncated: Boolean(data.truncated),
   };
 }
+
+/* ---------- v3: activity + contributors ---------- */
+
+export interface PathActivity {
+  lastCommitDate: string | null;
+  commitCount: number;
+}
+
+/**
+ * Reads the total-item count for a path out of the `Link: rel="last"` header
+ * on a `per_page=1` request, instead of paginating through every commit.
+ * If there's no "last" link, the result fit on one page (0 or 1 items).
+ */
+function parseLastPageFromLinkHeader(header: string | null): number | null {
+  if (!header) return null;
+  const match = header.match(/[?&]page=(\d+)[^>]*>;\s*rel="last"/);
+  return match ? parseInt(match[1], 10) : null;
+}
+
+export async function fetchPathActivity(
+  owner: string,
+  repo: string,
+  path: string
+): Promise<PathActivity> {
+  try {
+    const res = await githubFetch(
+      `https://api.github.com/repos/${owner}/${repo}/commits?path=${encodeURIComponent(
+        path
+      )}&per_page=1`
+    );
+    if (!res.ok) {
+      return { lastCommitDate: null, commitCount: 0 };
+    }
+    const data = await res.json();
+    const lastPage = parseLastPageFromLinkHeader(res.headers.get("link"));
+    const commitCount = lastPage ?? (Array.isArray(data) ? data.length : 0);
+    const lastCommitDate =
+      data?.[0]?.commit?.committer?.date ?? data?.[0]?.commit?.author?.date ?? null;
+    return { lastCommitDate, commitCount };
+  } catch {
+    // network hiccup on one path shouldn't fail the whole city
+    return { lastCommitDate: null, commitCount: 0 };
+  }
+}
+
+export interface Contributor {
+  login: string;
+  avatarUrl: string;
+  contributions: number;
+  htmlUrl: string;
+}
+
+export async function fetchContributors(owner: string, repo: string): Promise<Contributor[]> {
+  try {
+    const res = await githubFetch(
+      `https://api.github.com/repos/${owner}/${repo}/contributors?per_page=8`
+    );
+    if (!res.ok) return [];
+    const data = await res.json();
+    if (!Array.isArray(data)) return [];
+    return data
+      .filter((c) => c?.login && c.type !== "Bot")
+      .map((c) => ({
+        login: c.login as string,
+        avatarUrl: c.avatar_url as string,
+        contributions: c.contributions as number,
+        htmlUrl: c.html_url as string,
+      }));
+  } catch {
+    return [];
+  }
+}

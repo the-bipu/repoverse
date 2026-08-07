@@ -3,15 +3,28 @@
 import { useMemo, useState } from "react";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls, Html } from "@react-three/drei";
-import type { CityData, CityBuilding } from "@/lib/buildCity";
+import type { CityData, CityBuilding, BuildingActivity } from "@/lib/buildCity";
+import { ACTIVITY_COLORS, ACTIVITY_LABELS } from "@/lib/buildCity";
 
 const GAP = 2.2;
 
-function Building({ b, columns }: { b: CityBuilding; columns: number }) {
+export type CityMode = "structure" | "heatmap";
+
+interface BuildingProps {
+  b: CityBuilding;
+  columns: number;
+  mode: CityMode;
+  activity?: BuildingActivity;
+}
+
+function Building({ b, columns, mode, activity }: BuildingProps) {
   const [hovered, setHovered] = useState(false);
   const x = (b.col - (columns - 1) / 2) * GAP;
   const z = b.row * GAP;
-  const color = b.kind === "folder" ? "#5EEAD4" : "#FFB454";
+
+  const structureColor = b.kind === "folder" ? "#5EEAD4" : "#FFB454";
+  const heatColor = activity ? ACTIVITY_COLORS[activity.level] : ACTIVITY_COLORS.unknown;
+  const color = mode === "heatmap" ? heatColor : structureColor;
 
   return (
     <group position={[x, 0, z]}>
@@ -27,9 +40,9 @@ function Building({ b, columns }: { b: CityBuilding; columns: number }) {
         <meshStandardMaterial
           color={color}
           emissive={color}
-          emissiveIntensity={hovered ? 0.55 : 0.15}
+          emissiveIntensity={hovered ? 0.55 : mode === "heatmap" ? 0.3 : 0.15}
           transparent
-          opacity={b.kind === "folder" ? 1 : 0.85}
+          opacity={b.kind === "folder" || mode === "heatmap" ? 1 : 0.85}
         />
       </mesh>
       {hovered && (
@@ -51,6 +64,13 @@ function Building({ b, columns }: { b: CityBuilding; columns: number }) {
             <div style={{ color: "#8892A6" }}>
               {b.fileCount} file{b.fileCount === 1 ? "" : "s"}
             </div>
+            {mode === "heatmap" && activity && (
+              <div style={{ color: heatColor, marginTop: 2 }}>
+                {ACTIVITY_LABELS[activity.level]}
+                {activity.lastCommitDate &&
+                  ` · ${new Date(activity.lastCommitDate).toLocaleDateString()}`}
+              </div>
+            )}
           </div>
         </Html>
       )}
@@ -58,7 +78,15 @@ function Building({ b, columns }: { b: CityBuilding; columns: number }) {
   );
 }
 
-export default function City3D({ data }: { data: CityData }) {
+export default function City3D({
+  data,
+  mode = "structure",
+  activity = {},
+}: {
+  data: CityData;
+  mode?: CityMode;
+  activity?: Record<string, BuildingActivity>;
+}) {
   const { buildings, columns } = data;
 
   const rows = useMemo(
@@ -86,7 +114,7 @@ export default function City3D({ data }: { data: CityData }) {
       </mesh>
 
       {buildings.map((b) => (
-        <Building key={b.id} b={b} columns={columns} />
+        <Building key={b.id} b={b} columns={columns} mode={mode} activity={activity[b.id]} />
       ))}
 
       <OrbitControls

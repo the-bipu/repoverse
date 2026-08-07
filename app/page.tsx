@@ -96,9 +96,9 @@ export default function HomePage() {
             <button className="btn btn-ghost" onClick={() => notReady("Sign-in isn't built yet")}>
               Sign in
             </button>
-            <p className="btn btn-primary">
+            <a className="btn btn-primary" href="#hero-repo-form">
               Visualize a repo
-            </p>
+            </a>
           </div>
         </nav>
       </div>
